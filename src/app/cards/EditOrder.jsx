@@ -239,7 +239,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
 
       try {
         const response = await runServerlessFunction({
-          name: 'EditOrderFunction',
+          name: 'EditCabinetOrder_app_function',
           parameters: {
             message: 'LOAD_CABINET_ORDER',
             cabinetOrderId,
@@ -346,7 +346,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
     setIsPreviewLoading(true);
     try {
       const response = await runServerlessFunction({
-        name: 'EditOrderFunction',
+        name: 'EditCabinetOrder_app_function',
         parameters: {
           message: 'PREVIEW_CABINET_ORDER',
           cabinetData,
@@ -402,7 +402,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
     setIsSaving(true);
     try {
       const response = await runServerlessFunction({
-        name: 'EditOrderFunction',
+        name: 'EditCabinetOrder_app_function',
         parameters: {
           message: 'UPDATE_CABINET_ORDER',
           cabinetOrderId,

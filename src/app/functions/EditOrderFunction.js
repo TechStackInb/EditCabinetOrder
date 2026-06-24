@@ -175,29 +175,52 @@ async function getAssociatedObjects(
   toType,
   properties,
 ) {
-  // Page through all associated records of toType
-  const all = [];
+  // Step 1: get associated record IDs via the associations endpoint (returns IDs only, no properties)
+  const ids = [];
   let after = undefined;
   for (let page = 0; page < 20; page++) {
-    const qs =
-      properties.map((p) => `properties=${p}`).join("&") +
-      (after ? `&after=${after}` : "");
-    const res = await fetch(
-      `https://api.hubapi.com/crm/v3/objects/${fromType}/${fromId}/associations/${toType}?${qs}&limit=100`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
+    const url =
+      `https://api.hubapi.com/crm/v4/objects/${fromType}/${fromId}/associations/${toType}` +
+      (after ? `?after=${after}` : "");
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
     if (!res.ok) {
       const e = await res.text();
+      if (res.status === 404) break; // no associations — return empty
       throw new Error(
         `Associations ${fromType}:${fromId}→${toType}: ${res.status} — ${e}`,
       );
     }
     const data = await res.json();
-    if (data.results) all.push(...data.results);
+    for (const r of data.results || []) {
+      const id = r.toObjectId || r.id;
+      if (id) ids.push(String(id));
+    }
     after = data.paging?.next?.after;
     if (!after) break;
   }
-  return all;
+  if (ids.length === 0) return [];
+
+  // Step 2: batch-fetch full properties for each associated record
+  const qs = properties.map((p) => `properties=${p}`).join("&");
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      const res = await fetch(
+        `https://api.hubapi.com/crm/v3/objects/${toType}/${id}?${qs}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (!res.ok) {
+        const e = await res.text();
+        console.log(
+          `[getAssociatedObjects] failed to fetch ${toType}:${id} — ${res.status} — ${e}`,
+        );
+        return null;
+      }
+      return res.json();
+    }),
+  );
+  return records.filter(Boolean);
 }
 
 async function createRecord(accessToken, objectType, properties) {
@@ -946,8 +969,11 @@ function mapOrderToColorStyle(p) {
   };
 }
 
-function mapOpeningToRow(p) {
+function mapOpeningToRow(p, recordId) {
   return {
+    // Stable identity — carried through form untouched on every field update
+    _openingId: p.opening_id || null,
+    _recordId: recordId || null,
     cabinetType: p.cabinet_type || "",
     doorType: p.door_type || "",
     widthInches: p.width_inches || "0",
@@ -1088,7 +1114,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
   });
 
   const openingRows = sortedOpenings.map((o) =>
-    mapOpeningToRow(o.properties || {}),
+    mapOpeningToRow(o.properties || {}, o.id),
   );
 
   // 4. Build cabinetData
@@ -1262,52 +1288,85 @@ async function updateCabinetOrder(
   );
   console.log(`[UPDATE] patched Cabinet Order ${cabinetOrderId}`);
 
-  // 2. Smart-diff openings by opening_id (D1, D2 …)
-  const openingPropertiesNeeded = ["opening_id"];
+  // 2. Smart-diff openings using _recordId and _openingId carried from LOAD.
+  //
+  //    Each row loaded from HubSpot has _recordId (HubSpot record ID) and
+  //    _openingId (e.g. "D1"). OpeningsTab spreads these on every field update
+  //    so they survive all user edits and arrive here unchanged.
+  //
+  //    Cases:
+  //      row._recordId set   → existing opening → PATCH by record ID
+  //      row._recordId null  → user added a new row → CREATE + associate
+  //      existing record not present in newOpeningRows → user removed it → ARCHIVE
+  //
+  //    opening_id on save: existing rows keep their original D-number.
+  //    New rows get the next available D-number (max existing + increment).
+
+  const newOpeningRows = cabinetData.openings?.rows || [];
+  const colorStyle = cabinetData.colorStyle || {};
+
+  // Build set of record IDs still present after edit (for archive detection)
+  const retainedRecordIds = new Set(
+    newOpeningRows.map((r) => r._recordId).filter(Boolean),
+  );
+
+  // Fetch all existing opening record IDs so we know what to archive
   const existingOpenings = await getAssociatedObjects(
     accessToken,
     CABINET_ORDER_TYPE,
     cabinetOrderId,
     CABINET_OPENING_TYPE,
-    openingPropertiesNeeded,
+    ["opening_id"],
   );
+  const existingRecordIds = existingOpenings.map((o) => o.id);
 
-  // Map existing: opening_id → record ID
-  const existingMap = {};
-  for (const o of existingOpenings) {
-    const oid = o.properties?.opening_id;
-    if (oid) existingMap[oid] = o.id;
-  }
-
-  const newOpeningRows = cabinetData.openings?.rows || [];
-  const colorStyle = cabinetData.colorStyle || {};
+  // Determine next D-number for any newly added rows
+  const existingDNums = existingOpenings
+    .map((o) =>
+      parseInt((o.properties?.opening_id || "D0").replace(/\D/g, ""), 10),
+    )
+    .filter((n) => !isNaN(n));
+  let nextDNum = existingDNums.length > 0 ? Math.max(...existingDNums) + 1 : 1;
 
   const openingPrices = newOpeningRows.map((row, i) =>
-    priceOpening(row, inventory, colorStyle, hubdbColors, `D${i + 1}`),
+    priceOpening(
+      row,
+      inventory,
+      colorStyle,
+      hubdbColors,
+      row._openingId || `D${i + 1}`,
+    ),
   );
 
   // PATCH existing / CREATE new
   await Promise.all(
     newOpeningRows.map(async (row, i) => {
-      const openingId = `D${i + 1}`;
       const pricing = openingPrices[i];
-      const props = buildCabinetOpeningProperties(row, i, pricing);
-      const existingRecordId = existingMap[openingId];
       try {
-        if (existingRecordId) {
-          // PATCH
+        if (row._recordId) {
+          // Existing opening — PATCH in place, preserve record ID and opening_id
+          const props = buildCabinetOpeningProperties(
+            { ...row, openingIdOverride: row._openingId },
+            i,
+            pricing,
+          );
+          // Keep the original opening_id, don't let buildCabinetOpeningProperties re-derive it
+          props.opening_id = row._openingId;
           await updateRecord(
             accessToken,
             CABINET_OPENING_TYPE,
-            existingRecordId,
+            row._recordId,
             props,
           );
-          results.openingIds.push(existingRecordId);
+          results.openingIds.push(row._recordId);
           console.log(
-            `[UPDATE] patched opening ${openingId} (record ${existingRecordId})`,
+            `[UPDATE] patched opening ${row._openingId} (record ${row._recordId})`,
           );
         } else {
-          // CREATE + associate
+          // New row added by user — assign next available D-number
+          const newOpeningId = `D${nextDNum++}`;
+          const props = buildCabinetOpeningProperties(row, i, pricing);
+          props.opening_id = newOpeningId;
           const newOpening = await createRecord(
             accessToken,
             CABINET_OPENING_TYPE,
@@ -1322,23 +1381,22 @@ async function updateCabinetOrder(
           );
           results.openingIds.push(newOpening.id);
           console.log(
-            `[UPDATE] created new opening ${openingId} (record ${newOpening.id})`,
+            `[UPDATE] created new opening ${newOpeningId} (record ${newOpening.id})`,
           );
         }
-        // Mark as handled
-        delete existingMap[openingId];
       } catch (err) {
-        results.errors.push(
-          `Opening ${openingId}: ${err?.message || String(err)}`,
-        );
+        const label = row._openingId || `row ${i + 1}`;
+        results.errors.push(`Opening ${label}: ${err?.message || String(err)}`);
       }
     }),
   );
 
-  // ARCHIVE removed openings (present in old, absent from new)
-  const removedIds = Object.values(existingMap);
+  // ARCHIVE removed openings (existed before, not retained after edit)
+  const removedRecordIds = existingRecordIds.filter(
+    (id) => !retainedRecordIds.has(id),
+  );
   await Promise.all(
-    removedIds.map(async (recordId) => {
+    removedRecordIds.map(async (recordId) => {
       try {
         await archiveRecord(accessToken, CABINET_OPENING_TYPE, recordId);
         console.log(`[UPDATE] archived removed opening record ${recordId}`);
