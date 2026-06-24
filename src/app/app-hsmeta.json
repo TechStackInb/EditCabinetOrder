@@ -1,0 +1,41 @@
+{
+  "uid": "EditCabinetOrder_app",
+  "type": "app",
+  "config": {
+    "description": "Edit already created cabinet order",
+    "name": "EditCabinetOrder-App",
+    "distribution": "private",
+    "auth": {
+      "type": "static",
+      "requiredScopes": [
+        "oauth",
+        "crm.objects.contacts.read",
+        "crm.objects.contacts.write",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+        "crm.objects.custom.read",
+        "crm.objects.custom.write",
+        "hubdb",
+        "crm.objects.line_items.read",
+        "crm.objects.line_items.write",
+        "files",
+        "files.ui_hidden.read"
+      ],
+      "optionalScopes": [],
+      "conditionallyRequiredScopes": []
+    },
+    "permittedUrls": {
+      "fetch": [
+        "https://api.hubapi.com"
+      ],
+      "iframe": [],
+      "img": []
+    },
+    "support": {
+      "supportEmail": "manjunath.c@inboundsys.com",
+      "documentationUrl": "",
+      "supportUrl": "",
+      "supportPhone": ""
+    }
+  }
+}

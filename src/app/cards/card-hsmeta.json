@@ -1,0 +1,12 @@
+{
+  "uid": "EditCabinetOrder_card",
+  "type": "card",
+  "config": {
+    "name": "Edit Cabinet Order",
+    "location": "crm.record.tab",
+    "entrypoint": "/app/cards/NewCard.tsx",
+    "objectTypes": [
+      "p_cabinet_order"
+    ]
+  }
+}
