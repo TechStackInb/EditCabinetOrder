@@ -160,7 +160,7 @@ const isRowValid = (row) =>
     !row.boreTopError &&
     !row.boreMidError &&
     !row.boreBottomError &&
-    !row.archError
+    !row.archError,
   );
 
 // A row counts as "started" when the user has picked a cabinet type.
@@ -327,7 +327,7 @@ const OpeningCard = ({
   const handleCenterBoreYes = () => {
     const { boreMid, boreMidFrac } = calcCenterBore(
       row.heightInches,
-      row.heightFraction
+      row.heightFraction,
     );
     updateRow(row.id, '__batch', {
       boreMid,
@@ -356,7 +356,7 @@ const OpeningCard = ({
       widthInches,
       widthFraction,
       row.heightInches,
-      row.heightFraction
+      row.heightFraction,
     );
     // Show warning only — do NOT auto-correct mid-typing (user fixes it themselves)
     const updates = {
@@ -376,7 +376,7 @@ const OpeningCard = ({
       heightInches,
       heightFraction,
       row.widthInches,
-      row.widthFraction
+      row.widthFraction,
     );
     // Show warning only — do NOT auto-correct mid-typing
     const updates = {
@@ -392,7 +392,7 @@ const OpeningCard = ({
         row.archHeightInches,
         row.archHeightFraction,
         heightInches,
-        heightFraction
+        heightFraction,
       );
       updates.archError = archResult.valid ? null : archResult.message;
     }
@@ -408,7 +408,7 @@ const OpeningCard = ({
       boreTopFrac,
       row.heightInches,
       row.heightFraction,
-      row.bore
+      row.bore,
     );
     // Show warning only — do NOT auto-correct mid-typing
     const updates = {
@@ -427,7 +427,7 @@ const OpeningCard = ({
       boreBottomFrac,
       row.heightInches,
       row.heightFraction,
-      row.bore
+      row.bore,
     );
     // Show warning only — do NOT auto-correct mid-typing
     const updates = {
@@ -446,7 +446,7 @@ const OpeningCard = ({
       boreMid,
       boreMidFrac,
       row.heightInches,
-      row.heightFraction
+      row.heightFraction,
     );
     // Show warning only — do NOT auto-correct mid-typing
     const updates = {
@@ -466,7 +466,7 @@ const OpeningCard = ({
       archInches,
       archFraction,
       row.heightInches,
-      row.heightFraction
+      row.heightFraction,
     );
     // Show warning only — do NOT auto-correct mid-typing
     const updates = {
@@ -510,7 +510,7 @@ const OpeningCard = ({
     if (v) {
       const { boreMid, boreMidFrac } = calcCenterBore(
         row.heightInches,
-        row.heightFraction
+        row.heightFraction,
       );
       updateRow(row.id, '__batch', {
         midBore: true,
@@ -948,7 +948,14 @@ const OpeningCard = ({
 
 export const OpeningsTab = ({ data, onChange }) => {
   const [rows, setRows] = useState(() => {
-    if (data?.rows) return data.rows;
+    if (data?.rows) {
+      // Loaded rows from the edit card have a synthetic `id` assigned by
+      // EditOrderFunction. Advance _nextId past the highest loaded id so that
+      // any newly added rows get a unique id and never collide with loaded ones.
+      const maxId = Math.max(0, ...data.rows.map((r) => r.id || 0));
+      _nextId = maxId + 1;
+      return data.rows;
+    }
     _nextId = 1;
     return [createEmptyRow()];
   });
@@ -989,7 +996,7 @@ export const OpeningsTab = ({ data, onChange }) => {
           (r) =>
             r.id !== id &&
             r.cabinetType === 'Lazy Susan' &&
-            r._lazySusanCompanionOf === id
+            r._lazySusanCompanionOf === id,
         );
         if (!alreadyHasCompanion && sourceRow) {
           const companionRow = {
@@ -1032,7 +1039,7 @@ export const OpeningsTab = ({ data, onChange }) => {
         if (r.id === id) return r;
         if (r.cabinetType === cabinetType) return { ...r, grain };
         return r;
-      })
+      }),
     );
   };
 
@@ -1043,16 +1050,17 @@ export const OpeningsTab = ({ data, onChange }) => {
     (r) =>
       r.cabinetType === 'Base' ||
       r.cabinetType === 'Upper' ||
-      r.cabinetType === 'Lazy Susan'
+      r.cabinetType === 'Lazy Susan',
   ).length;
   const drawers = rows.filter(
-    (r) => r.cabinetType === 'Drawer Front' || r.cabinetType === 'Routed Drawer'
+    (r) =>
+      r.cabinetType === 'Drawer Front' || r.cabinetType === 'Routed Drawer',
   ).length;
   const other = rows.filter(
-    (r) => r.cabinetType === 'Filler' || r.cabinetType === 'Valance'
+    (r) => r.cabinetType === 'Filler' || r.cabinetType === 'Valance',
   ).length;
   const incomplete = rows.filter(
-    (r) => isRowStarted(r) && !isRowValid(r)
+    (r) => isRowStarted(r) && !isRowValid(r),
   ).length;
 
   return (

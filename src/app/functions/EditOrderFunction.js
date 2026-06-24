@@ -1113,9 +1113,16 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     return numA - numB;
   });
 
-  const openingRows = sortedOpenings.map((o) =>
-    mapOpeningToRow(o.properties || {}, o.id),
-  );
+  // Assign a synthetic `id` matching OpeningsTab's internal row key convention.
+  // Loaded rows don't come from createEmptyRow() so they have no `id` — without
+  // it, updateRow/deleteRow (which key by row.id) can't find them.
+  // We use the D-number as the id (1, 2, 3…) so they're stable and don't
+  // collide with newly added rows (which start _nextId from 1, but the tab
+  // resets _nextId only on a fresh mount — using large offsets avoids collision).
+  const openingRows = sortedOpenings.map((o, i) => ({
+    ...mapOpeningToRow(o.properties || {}, o.id),
+    id: i + 1, // stable React key for OpeningsTab's updateRow/deleteRow
+  }));
 
   // 4. Build cabinetData
   const cabinetData = {
