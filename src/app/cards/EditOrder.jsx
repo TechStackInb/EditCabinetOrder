@@ -7,16 +7,11 @@ import {
 } from '@hubspot/ui-extensions';
 import { hubspot } from '@hubspot/ui-extensions';
 
-interface CrmExtensionProps {
-  context: CrmContext;
-  actions: ExtensionPointApiActions<'crm.record.tab'>;
-}
-
-hubspot.extend<'crm.record.tab'>(({ context, actions }: CrmExtensionProps) => (
+hubspot.extend(({ context, actions }) => (
   <CrmExtension context={context} actions={actions} />
 ));
 
-const CrmExtension = ({ context, actions }: CrmExtensionProps) => {
+const CrmExtension = ({ context, actions }) => {
   const appCardDocsLink =
     'https://developers.hubspot.com/docs/apps/developer-platform/add-features/ui-extensibility/app-cards/overview';
 
