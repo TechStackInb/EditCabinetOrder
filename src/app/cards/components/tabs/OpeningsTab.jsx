@@ -167,6 +167,15 @@ const isRowValid = (row) =>
 // Started rows must be completed before Next/Submit is allowed.
 const isRowStarted = (row) => Boolean(row.cabinetType);
 
+// A row is removable even when it's the only one left if it represents real
+// data — either the user has picked a cabinet type, or it was loaded from an
+// existing saved opening record (_recordId, set by the edit card's LOAD).
+// Only the create flow's genuinely blank placeholder row (no selection, no
+// backing record) is protected, so the form always has at least one row to
+// start filling in.
+const isRemovable = (row, total) =>
+  total > 1 || Boolean(row.cabinetType) || Boolean(row._recordId);
+
 const getDoorTypeOptions = (cabinetType) => {
   switch (cabinetType) {
     case 'Valance':
@@ -559,7 +568,7 @@ const OpeningCard = ({
               variant="destructive"
               size="xs"
               onClick={() => deleteRow(row.id)}
-              disabled={total === 1}
+              disabled={!isRemovable(row, total)}
             >
               Remove
             </Button>

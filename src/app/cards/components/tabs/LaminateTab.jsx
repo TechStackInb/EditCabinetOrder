@@ -35,6 +35,15 @@ const isRowValid = (row) =>
 // Started rows must be completed before Next is allowed.
 const isRowStarted = (row) => Boolean(row.laminateId || row.qty);
 
+// A row is removable even when it's the only one left if it represents real
+// data — either the user has selected a laminate (laminateId), or it was
+// loaded from an existing saved line item (_lineItemId, set by the edit
+// card's reverse-mapping on LOAD). Only the create flow's genuinely blank
+// placeholder row (no selection, no backing record) is protected, so the
+// form always has at least one row to start filling in.
+const isRemovable = (row, total) =>
+  total > 1 || Boolean(row.laminateId) || Boolean(row._lineItemId);
+
 // ── Single Laminate Card ──────────────────────────────────────────────────────
 
 const LaminateCard = ({
@@ -123,7 +132,7 @@ const LaminateCard = ({
             variant="destructive"
             size="xs"
             onClick={() => deleteRow(row.id)}
-            disabled={total === 1}
+            disabled={!isRemovable(row, total)}
           >
             Remove
           </Button>
