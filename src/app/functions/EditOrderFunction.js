@@ -296,20 +296,18 @@ async function associateRecords(accessToken, fromType, fromId, toType, toId) {
   return res.json();
 }
 
-async function getAssociatedLineItems(accessToken, cabinetOrderId) {
-  // HubSpot v4 associations: list line items linked to the cabinet order
-  const res = await fetch(
-    `https://api.hubapi.com/crm/v4/objects/${CABINET_ORDER_TYPE}/${cabinetOrderId}/associations/${LINE_ITEM_TYPE}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+async function getAssociatedLineItemsFull(accessToken, cabinetOrderId) {
+  // Full version: fetches line item properties (not just IDs) so we can
+  // reverse-map each one back to its source inventory record via hs_sku,
+  // and diff against the form's current rows on save instead of blindly
+  // deleting everything.
+  return getAssociatedObjects(
+    accessToken,
+    CABINET_ORDER_TYPE,
+    cabinetOrderId,
+    LINE_ITEM_TYPE,
+    ["name", "quantity", "price", "hs_sku"],
   );
-  if (!res.ok) {
-    const e = await res.text();
-    // 404 means no associations at all — treat as empty
-    if (res.status === 404) return [];
-    throw new Error(`Get line item associations: ${res.status} — ${e}`);
-  }
-  const data = await res.json();
-  return (data.results || []).map((r) => r.toObjectId || r.id);
 }
 
 async function deleteLineItem(accessToken, lineItemId) {
@@ -936,7 +934,92 @@ function buildCabinetOpeningProperties(row, index, pricing) {
   return props;
 }
 
-// ─── LOAD: Cabinet Order props → cabinetData shape ───────────────────────────
+// ─── Material line item reverse-mapping (LOAD) ───────────────────────────────
+
+// Maps each material tab to the inventory `type` values it draws from, and
+// the row shape it expects. Mirrors the constants in MouldingsTab.jsx,
+// LaminateTab.jsx, ThermofoilTab.jsx, FillSticksTab.jsx.
+const MATERIAL_TAB_INVENTORY_TYPES = {
+  mouldings: ["Moulding", "MouldingDetail"],
+  laminate: ["Laminate", "PSLaminate", "LaminateDetail"],
+  thermofoil: ["Thermofoil", "ThermofoilDetail"],
+  fillSticks: ["FillStick", "FillStickDetail"],
+};
+
+// Field name each tab uses for its inventory-record-ID row field
+// (mouldingId, laminateId, thermofoilId, fillStickId).
+const MATERIAL_TAB_ID_FIELD = {
+  mouldings: "mouldingId",
+  laminate: "laminateId",
+  thermofoil: "thermofoilId",
+  fillSticks: "fillStickId",
+};
+
+let _materialRowId = 1; // matches each tab's internal `_nextId` row-key convention
+
+// Reverse-maps existing line items back into material tab row shapes by
+// matching each line item's hs_sku against inventory. Returns
+// { mouldings: {rows}|null, laminate: {rows}|null, thermofoil: {rows}|null,
+//   fillSticks: {rows}|null, unmatchedLineItemIds: [...] }
+//
+// unmatchedLineItemIds covers line items that are NOT material rows (the
+// Cabinet rollup, Bore Charge, Custom Bore Charge) — those have no SKU match
+// and are always safe to delete-and-recreate on save since they're fully
+// computed from openings, never user-selected.
+function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
+  const result = {
+    mouldings: [],
+    laminate: [],
+    thermofoil: [],
+    fillSticks: [],
+  };
+  const matchedLineItemIds = new Set();
+
+  for (const li of lineItems) {
+    const sku = li.properties?.hs_sku;
+    if (!sku) continue; // Cabinet rollup / Bore Charge / Custom Bore Charge have no SKU
+
+    const invRecord = inventory.find((r) => r.properties?.sku === sku);
+    if (!invRecord) continue; // SKU doesn't match any current inventory record — leave alone
+
+    const invType = invRecord.properties?.type;
+    const tabKey = Object.keys(MATERIAL_TAB_INVENTORY_TYPES).find((key) =>
+      MATERIAL_TAB_INVENTORY_TYPES[key].includes(invType),
+    );
+    if (!tabKey) continue; // not a material-tab inventory type
+
+    const idField = MATERIAL_TAB_ID_FIELD[tabKey];
+    const row = {
+      id: _materialRowId++,
+      _lineItemId: li.id, // carried through for smart-diff on save
+      description: invRecord.properties?.name || li.properties?.name || "",
+      [idField]: invRecord.id,
+      color: invRecord.properties?.partcolor || "",
+      qty: li.properties?.quantity || "",
+      ordered: false,
+      promptColorMismatch: false,
+    };
+    // MouldingsTab uniquely requires an `inches` field (fixed-length stock,
+    // always 94" per createEmptyRow's default) — without it the reverse-mapped
+    // row fails isRowValid and shows as "incomplete" even though it's fully
+    // populated otherwise.
+    if (tabKey === "mouldings") row.inches = "94";
+    result[tabKey].push(row);
+    matchedLineItemIds.add(li.id);
+  }
+
+  const unmatchedLineItemIds = lineItems
+    .map((li) => li.id)
+    .filter((id) => !matchedLineItemIds.has(id));
+
+  return {
+    mouldings: result.mouldings.length ? { rows: result.mouldings } : null,
+    laminate: result.laminate.length ? { rows: result.laminate } : null,
+    thermofoil: result.thermofoil.length ? { rows: result.thermofoil } : null,
+    fillSticks: result.fillSticks.length ? { rows: result.fillSticks } : null,
+    unmatchedLineItemIds,
+  };
+}
 
 function parseDateFromEpoch(epochMs) {
   if (!epochMs || epochMs === "0" || epochMs === 0) return null;
@@ -1114,8 +1197,18 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
   ]);
 
   const op = orderRecord.properties || {};
-  console.log(
-    `[DEBUG customer] firstname="${op.customer_firstname}" lastname="${op.customer_lastname}"`,
+
+  // 1b. Fetch existing line items and reverse-map material ones back into
+  //     the form so the user sees what's already on the order, instead of
+  //     starting from empty tabs (which would otherwise cause data loss —
+  //     see updateCabinetOrder's smart-diff for the save-side counterpart).
+  const existingLineItems = await getAssociatedLineItemsFull(
+    accessToken,
+    cabinetOrderId,
+  );
+  const materialMap = reverseMapLineItemsToMaterialTabs(
+    existingLineItems,
+    inventory,
   );
 
   // 2. Get the associated Deal ID so we can re-associate new line items
@@ -1165,18 +1258,11 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     details: mapOrderToDetails(op),
     colorStyle: mapOrderToColorStyle(op),
     openings: openingRows.length > 0 ? { rows: openingRows } : null,
-    mouldings: null,
-    laminate: null,
-    thermofoil: null,
-    fillSticks: null,
+    mouldings: materialMap.mouldings,
+    laminate: materialMap.laminate,
+    thermofoil: materialMap.thermofoil,
+    fillSticks: materialMap.fillSticks,
   };
-
-  // NOTE: Material tabs (mouldings, laminate, thermofoil, fillSticks) are NOT
-  // stored as Cabinet Opening properties — they are line items with no stable
-  // natural key mapping back to inventory IDs. They are left null here and the
-  // user will need to re-enter them on edit. This is a known limitation noted
-  // in the handoff; a future improvement would be to store material selections
-  // on the Cabinet Order record directly.
 
   const orderInfo = {
     orderNumber: op.order_number || "",
@@ -1186,6 +1272,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
       `${op.customer_firstname || ""} ${op.customer_lastname || ""}`.trim(),
     franchiseNo: "", // from Deal — not stored on Cabinet Order
     suffix: (op.order_number || "").split("-")[0] || "000",
+    unmatchedLineItemIds: materialMap.unmatchedLineItemIds, // rollup/bore charges — safe to delete-recreate
     dealId,
   };
 
@@ -1451,20 +1538,72 @@ async function updateCabinetOrder(
     }),
   );
 
-  // 3. Delete-and-recreate line items (no stable natural key)
+  // 3. Smart-diff line items.
+  //
+  //    Cabinet rollup + Bore Charge + Custom Bore Charge are fully computed
+  //    from openings (never user-selected) — always delete and recreate these.
+  //    They're identified by orderInfo.unmatchedLineItemIds (set during LOAD's
+  //    reverse-mapping — any existing line item whose hs_sku didn't match a
+  //    material-tab inventory record falls into this bucket).
+  //
+  //    Material tab line items (mouldings/laminate/thermofoil/fillSticks) are
+  //    diffed by _lineItemId, which LOAD attached to each reverse-mapped row:
+  //      row._lineItemId set, still in form → PATCH quantity if changed
+  //      row._lineItemId set, removed from form → DELETE
+  //      row has no _lineItemId (new row added by user) → CREATE
+  const materialTabs = [
+    { key: "mouldings", idField: "mouldingId" },
+    { key: "laminate", idField: "laminateId" },
+    { key: "thermofoil", idField: "thermofoilId" },
+    { key: "fillSticks", idField: "fillStickId" },
+  ];
+
   try {
-    const existingLineItemIds = await getAssociatedLineItems(
+    const alwaysRecreateIds = orderInfo.unmatchedLineItemIds || [];
+    console.log(
+      `[UPDATE] deleting ${alwaysRecreateIds.length} computed line items (rollup/bore charges)`,
+    );
+    await Promise.all(
+      alwaysRecreateIds.map((id) => deleteLineItem(accessToken, id)),
+    );
+  } catch (err) {
+    results.errors.push(
+      `Delete computed line items: ${err?.message || String(err)}`,
+    );
+  }
+
+  // Build the set of _lineItemId values still present in the form (retained).
+  const retainedLineItemIds = new Set();
+  for (const { key } of materialTabs) {
+    const rows = cabinetData[key]?.rows || [];
+    for (const row of rows) {
+      if (row._lineItemId) retainedLineItemIds.add(row._lineItemId);
+    }
+  }
+
+  // Determine which material line items existed before but are no longer in
+  // the form (user removed that row) — these need deleting.
+  try {
+    const allExistingLineItems = await getAssociatedLineItemsFull(
       accessToken,
       cabinetOrderId,
     );
-    console.log(
-      `[UPDATE] deleting ${existingLineItemIds.length} existing line items`,
-    );
-    await Promise.all(
-      existingLineItemIds.map((id) => deleteLineItem(accessToken, id)),
-    );
+    const removedMaterialLineItemIds = allExistingLineItems
+      .map((li) => li.id)
+      .filter((id) => !(orderInfo.unmatchedLineItemIds || []).includes(id)) // not a rollup/bore (already handled above)
+      .filter((id) => !retainedLineItemIds.has(id)); // not retained in the form
+    if (removedMaterialLineItemIds.length > 0) {
+      console.log(
+        `[UPDATE] deleting ${removedMaterialLineItemIds.length} removed material line items`,
+      );
+      await Promise.all(
+        removedMaterialLineItemIds.map((id) => deleteLineItem(accessToken, id)),
+      );
+    }
   } catch (err) {
-    results.errors.push(`Delete line items: ${err?.message || String(err)}`);
+    results.errors.push(
+      `Delete removed material line items: ${err?.message || String(err)}`,
+    );
   }
 
   const rollupPrice =
@@ -1477,12 +1616,6 @@ async function updateCabinetOrder(
     `[ROLLUP] $${rollupPrice} | [BORES] standard=${standardBores} custom=${customBores}`,
   );
 
-  const materialTabs = [
-    { key: "mouldings", idField: "mouldingId" },
-    { key: "laminate", idField: "laminateId" },
-    { key: "thermofoil", idField: "thermofoilId" },
-    { key: "fillSticks", idField: "fillStickId" },
-  ];
   const lineItemPromises = [];
 
   if (openingPrices.length > 0) {
@@ -1566,18 +1699,40 @@ async function updateCabinetOrder(
             const invRecord = inventory.find((r) => r.id === row[idField]);
             if (!invRecord)
               throw new Error(`Inventory record ${row[idField]} not found`);
-            const li = await createLineItemWithAssociations(
-              accessToken,
-              {
+            const qty = parseFloat(row.qty || "0") || 1;
+            const price = parseFloat(invRecord.properties?.cost || "0") || 0;
+
+            if (row._lineItemId) {
+              // Existing material line item — PATCH quantity/price in place.
+              // Preserves the line item's record ID and any history on it.
+              await updateRecord(accessToken, LINE_ITEM_TYPE, row._lineItemId, {
                 name: invRecord.properties?.name || "(unnamed)",
-                quantity: parseFloat(row.qty || "0") || 1,
-                price: parseFloat(invRecord.properties?.cost || "0") || 0,
+                quantity: qty,
+                price,
                 hs_sku: invRecord.properties?.sku || "",
-              },
-              dealId,
-              cabinetOrderId,
-            );
-            results.lineItemIds.push(li.id);
+              });
+              results.lineItemIds.push(row._lineItemId);
+              console.log(
+                `[UPDATE] patched ${key} line item (record ${row._lineItemId})`,
+              );
+            } else {
+              // New row added by user — CREATE + associate
+              const li = await createLineItemWithAssociations(
+                accessToken,
+                {
+                  name: invRecord.properties?.name || "(unnamed)",
+                  quantity: qty,
+                  price,
+                  hs_sku: invRecord.properties?.sku || "",
+                },
+                dealId,
+                cabinetOrderId,
+              );
+              results.lineItemIds.push(li.id);
+              console.log(
+                `[UPDATE] created new ${key} line item (record ${li.id})`,
+              );
+            }
           } catch (err) {
             results.errors.push(
               `${key} row ${i + 1}: ${err?.message || String(err)}`,
