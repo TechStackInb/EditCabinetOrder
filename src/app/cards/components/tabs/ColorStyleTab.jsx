@@ -17,7 +17,9 @@ const REQUIRED_KEYS = [
   'colorBase',
   'colorUpper',
   'colorDrawer',
-  'doorBackColor',
+  'doorBackColorBase',
+  'doorBackColorUpper',
+  'doorBackColorDrawer',
 ];
 
 const isComplete = (formData) =>
@@ -43,7 +45,8 @@ const SelectRow = ({ label, fieldKey, options, value, onChange }) => (
   </Box>
 );
 
-// Fills Upper/Drawer/DoorBack from Base only when they are empty — never overrides.
+// Fills Upper/Drawer styles + colors, and each Door Back color, from its
+// matching front color — only when empty, never overriding a manual pick.
 const applyBaseCascade = (fd) => {
   const result = { ...fd };
   if (result.styleBase) {
@@ -53,8 +56,14 @@ const applyBaseCascade = (fd) => {
   if (result.colorBase) {
     if (!result.colorUpper) result.colorUpper = result.colorBase;
     if (!result.colorDrawer) result.colorDrawer = result.colorBase;
-    if (!result.doorBackColor) result.doorBackColor = result.colorBase;
   }
+  // Door back colors mirror their corresponding front color when empty.
+  if (result.colorBase && !result.doorBackColorBase)
+    result.doorBackColorBase = result.colorBase;
+  if (result.colorUpper && !result.doorBackColorUpper)
+    result.doorBackColorUpper = result.colorUpper;
+  if (result.colorDrawer && !result.doorBackColorDrawer)
+    result.doorBackColorDrawer = result.colorDrawer;
   return result;
 };
 
@@ -65,9 +74,9 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
   const doors = useMemo(
     () =>
       (serverData?.inventory ?? []).filter(
-        (obj) => obj.properties.type === 'Door'
+        (obj) => obj.properties.type === 'Door',
       ),
-    [serverData]
+    [serverData],
   );
 
   // ── Apply cascade on initial load (mirrors VB Form_Current on navigation) ──
@@ -79,7 +88,9 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
       colorBase: '',
       colorUpper: '',
       colorDrawer: '',
-      doorBackColor: '',
+      doorBackColorBase: '',
+      doorBackColorUpper: '',
+      doorBackColorDrawer: '',
       prefShipDate: '',
     };
     return applyBaseCascade(initial);
@@ -116,7 +127,7 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
   const getMatch = (colorName) => {
     if (!colorName) return '';
     const row = (serverData?.hubdb ?? []).find(
-      (r) => r.values.color === colorName
+      (r) => r.values.color === colorName,
     );
     return row?.values.match ? 'Matching Back' : 'Industrial Match';
   };
@@ -133,7 +144,7 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
   const getColorImage = (colorName) => {
     if (!colorName) return null;
     const row = (serverData?.hubdb ?? []).find(
-      (r) => r.values.color === colorName
+      (r) => r.values.color === colorName,
     );
     const img = row?.values.colorpic;
     if (!img) return null;
@@ -150,12 +161,23 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
       if (!updated.styleDrawer) updated.styleDrawer = value;
     }
 
-    // VB: BaseColor_AfterUpdate — copy to Upper/Drawer/DoorBack when they are blank
+    // VB: BaseColor_AfterUpdate — copy to Upper/Drawer when blank, and seed the
+    // door back colors from their (now-filled) matching front colors.
     if (key === 'colorBase') {
       if (!updated.colorUpper) updated.colorUpper = value;
       if (!updated.colorDrawer) updated.colorDrawer = value;
-      if (!updated.doorBackColor) updated.doorBackColor = value;
+      if (!updated.doorBackColorBase) updated.doorBackColorBase = value;
+      if (!updated.doorBackColorUpper)
+        updated.doorBackColorUpper = updated.colorUpper;
+      if (!updated.doorBackColorDrawer)
+        updated.doorBackColorDrawer = updated.colorDrawer;
     }
+
+    // Each Door Back color mirrors its matching front color when still blank.
+    if (key === 'colorUpper' && !updated.doorBackColorUpper)
+      updated.doorBackColorUpper = value;
+    if (key === 'colorDrawer' && !updated.doorBackColorDrawer)
+      updated.doorBackColorDrawer = value;
 
     setFormData(updated);
   };
@@ -171,7 +193,9 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
     { label: 'Base', colorKey: 'colorBase' },
     { label: 'Upper', colorKey: 'colorUpper' },
     { label: 'Drawer', colorKey: 'colorDrawer' },
-    { label: 'Door Back', colorKey: 'doorBackColor' },
+    { label: 'Door Back Base', colorKey: 'doorBackColorBase' },
+    { label: 'Door Back Upper', colorKey: 'doorBackColorUpper' },
+    { label: 'Door Back Drawer', colorKey: 'doorBackColorDrawer' },
   ];
 
   return (
@@ -222,7 +246,7 @@ export const ColorStyleTab = ({ serverData, data, onChange }) => {
               value={colorValue}
               onChange={handleChange}
             />
-            {colorValue && colorKey !== 'doorBackColor' && (
+            {colorValue && !colorKey.startsWith('doorBack') && (
               <Flex direction="row" justify="end">
                 <Text>Back Color: {getMatch(colorValue)}</Text>
               </Flex>

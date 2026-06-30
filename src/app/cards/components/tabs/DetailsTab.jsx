@@ -13,6 +13,7 @@ import {
 export const DetailsTab = ({
   context,
   dealProperties,
+  contactProperties,
   baseNumber,
   data,
   onChange,
@@ -32,7 +33,7 @@ export const DetailsTab = ({
       shipOptions: '',
       shipDate: null,
       notes: '',
-    }
+    },
   );
 
   const handleChange = (field, value) => {
@@ -84,6 +85,14 @@ export const DetailsTab = ({
               value={formData.description}
               onChange={(v) => handleChange('description', v)}
               name="description"
+            />
+            <Input
+              label="Customer"
+              value={`${contactProperties?.firstname || ''} ${
+                contactProperties?.lastname || ''
+              }`.trim()}
+              readOnly={true}
+              name="customer"
             />
 
             {/* Cabinet Type — required */}

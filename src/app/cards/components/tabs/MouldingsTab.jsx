@@ -45,7 +45,7 @@ const MouldingCard = ({
   row,
   index,
   total,
-  baseColor,
+  orderColors = [],
   showAllColors,
   mouldings,
   updateRow,
@@ -59,8 +59,8 @@ const MouldingCard = ({
   const descOptions = useMemo(() => {
     const filtered = mouldings.filter((m) => {
       if (showAllColors) return true;
-      if (!baseColor) return true;
-      return m.properties.partcolor === baseColor;
+      if (orderColors.length === 0) return true;
+      return orderColors.includes(m.properties.partcolor);
     });
 
     return [
@@ -72,7 +72,7 @@ const MouldingCard = ({
         value: m.id,
       })),
     ];
-  }, [mouldings, baseColor, showAllColors]);
+  }, [mouldings, orderColors, showAllColors]);
 
   const handleDescriptionChange = (mouldingId) => {
     if (!mouldingId) {
@@ -90,7 +90,8 @@ const MouldingCard = ({
 
     const partColor = m.properties.partcolor || '';
     const description = m.properties.name || '';
-    const colorMismatches = baseColor && partColor !== baseColor;
+    const colorMismatches =
+      orderColors.length > 0 && !orderColors.includes(partColor);
 
     updateRow(row.id, '__batch', {
       mouldingId,
@@ -166,9 +167,9 @@ const MouldingCard = ({
         {/* ── Color mismatch warning ── */}
         {row.promptColorMismatch && (
           <Alert title="Color does not match" variant="warning">
-            The color of this moulding ({row.color || '—'}) does NOT match the
-            base color you selected ({baseColor}). Are you sure you want to
-            select this moulding?
+            The color of this moulding ({row.color || '—'}) does NOT match any
+            of your selected colors ({orderColors.join(', ') || '—'}). Are you
+            sure you want to select this moulding?
             <Flex direction="row" gap="small">
               <Button
                 variant="primary"
@@ -227,7 +228,12 @@ const MouldingCard = ({
 
 // ── Main Tab ──────────────────────────────────────────────────────────────────
 
-export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
+export const MouldingsTab = ({
+  serverData,
+  orderColors = [],
+  data,
+  onChange,
+}) => {
   const [rows, setRows] = useState(() => {
     if (data?.rows) return data.rows;
     _nextId = 1;
@@ -239,9 +245,9 @@ export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
   const mouldings = useMemo(
     () =>
       (serverData?.inventory ?? []).filter((obj) =>
-        MOULDING_TYPES.includes(obj.properties.type)
+        MOULDING_TYPES.includes(obj.properties.type),
       ),
-    [serverData]
+    [serverData],
   );
 
   // Emit state to parent. Three cases:
@@ -272,7 +278,7 @@ export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
         if (r.id !== id) return r;
         if (field === '__batch') return { ...r, ...value };
         return { ...r, [field]: value };
-      })
+      }),
     );
   };
 
@@ -281,7 +287,7 @@ export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
 
   // Count only started rows that are incomplete (ignore blank placeholder rows).
   const incomplete = rows.filter(
-    (r) => isRowStarted(r) && !isRowValid(r)
+    (r) => isRowStarted(r) && !isRowValid(r),
   ).length;
 
   return (
@@ -305,8 +311,8 @@ export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
           onChange={(v) => setShowAllColors(v)}
         />
         <Text variant="microcopy">
-          Show ALL color options (default: only mouldings matching base color
-          {baseColor ? ` "${baseColor}"` : ''})
+          Show ALL color options (default: only mouldings matching selected
+          colors{orderColors.length ? ` "${orderColors.join(', ')}"` : ''})
         </Text>
       </Flex>
 
@@ -326,7 +332,7 @@ export const MouldingsTab = ({ serverData, baseColor, data, onChange }) => {
           row={row}
           index={index}
           total={rows.length}
-          baseColor={baseColor}
+          orderColors={orderColors}
           showAllColors={showAllColors}
           mouldings={mouldings}
           updateRow={updateRow}

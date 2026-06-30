@@ -552,11 +552,14 @@ function formatDateForCncJson(dateValue) {
     d = new Date(dateValue);
   } else if (
     typeof dateValue === "object" &&
-    dateValue.year &&
-    dateValue.month &&
-    dateValue.date
+    dateValue.year != null &&
+    dateValue.month != null &&
+    dateValue.date != null
   ) {
-    d = new Date(dateValue.year, dateValue.month - 1, dateValue.date);
+    // HubSpot's DateInput month is 0-indexed (Jan = 0), matching the Date
+    // constructor's expectation — do NOT subtract 1. See formatDateForHubSpot
+    // for the full explanation of this confirmed indexing behavior.
+    d = new Date(dateValue.year, dateValue.month, dateValue.date);
   } else if (typeof dateValue === "string") {
     d = new Date(dateValue);
   }
@@ -567,13 +570,19 @@ function formatDateForCncJson(dateValue) {
 function formatDateForHubSpot(dateValue) {
   if (!dateValue) return null;
   if (typeof dateValue === "number") return dateValue;
+  // IMPORTANT: DateInput's onChange callback emits a 0-INDEXED month
+  // (Jan=0...Dec=11) — confirmed by testing: picking Dec 25, 2026 produced
+  // { year: 2026, month: 11, date: 25 }. Date.UTC also expects 0-indexed
+  // month, so we pass dateValue.month through UNCHANGED (no -1).
+  // Using `!= null` instead of truthy check so month=0 (January) isn't
+  // mistaken for "missing".
   if (
     typeof dateValue === "object" &&
-    dateValue.year &&
-    dateValue.month &&
-    dateValue.date
+    dateValue.year != null &&
+    dateValue.month != null &&
+    dateValue.date != null
   ) {
-    return Date.UTC(dateValue.year, dateValue.month - 1, dateValue.date);
+    return Date.UTC(dateValue.year, dateValue.month, dateValue.date);
   }
   if (typeof dateValue === "string") {
     const parsed = Date.parse(dateValue);
@@ -596,7 +605,7 @@ function buildCncJson(
   const details = cabinetData.details || {};
   const colorStyle = cabinetData.colorStyle || {};
   const openingRows = cabinetData.openings?.rows || [];
-  const doorBackColor = colorStyle.doorBackColor || "";
+  // Door back color now varies by cabinet type — resolved per-row below.
   const baseDoor = findDoorByName(inventory, colorStyle.styleBase);
   const upperDoor = findDoorByName(inventory, colorStyle.styleUpper);
   const drawerDoor = findDoorByName(inventory, colorStyle.styleDrawer);
@@ -634,7 +643,7 @@ function buildCncJson(
   for (let i = 0; i < openingRows.length; i++) {
     const row = openingRows[i];
     const pricing = openingPrices[i] || {};
-    let doorRecord, color;
+    let doorRecord, color, doorBackColor;
     switch (row.cabinetType) {
       case "Base":
       case "Lazy Susan":
@@ -642,19 +651,23 @@ function buildCncJson(
       case "Valance":
         doorRecord = baseDoor;
         color = colorStyle.colorBase || "";
+        doorBackColor = colorStyle.doorBackColorBase || "";
         break;
       case "Upper":
         doorRecord = upperDoor;
         color = colorStyle.colorUpper || "";
+        doorBackColor = colorStyle.doorBackColorUpper || "";
         break;
       case "Drawer Front":
       case "Filler":
         doorRecord = drawerDoor;
         color = colorStyle.colorDrawer || "";
+        doorBackColor = colorStyle.doorBackColorDrawer || "";
         break;
       default:
         doorRecord = baseDoor;
         color = colorStyle.colorBase || "";
+        doorBackColor = colorStyle.doorBackColorBase || "";
     }
     if (!doorRecord) continue;
     const props = doorRecord.properties || {};
@@ -877,7 +890,9 @@ function buildCabinetOrderProperties(cabinetData, inventory) {
     base_color: colorStyle.colorBase || "",
     upper_color: colorStyle.colorUpper || "",
     drawer_color: colorStyle.colorDrawer || "",
-    door_back_color: colorStyle.doorBackColor || "",
+    door_back_base_color: colorStyle.doorBackColorBase || "",
+    door_back_upper_color: colorStyle.doorBackColorUpper || "",
+    door_back_drawer_color: colorStyle.doorBackColorDrawer || "",
     base_image_url: lookupImageUrl(colorStyle.styleBase),
     upper_image_url: lookupImageUrl(colorStyle.styleUpper),
     drawer_image_url: lookupImageUrl(colorStyle.styleDrawer),
@@ -924,15 +939,30 @@ function buildCabinetOpeningProperties(row, index, pricing) {
 // ─── LOAD: Cabinet Order props → cabinetData shape ───────────────────────────
 
 function parseDateFromEpoch(epochMs) {
-  if (!epochMs) return null;
+  if (!epochMs || epochMs === "0" || epochMs === 0) return null;
+
+  // HubSpot date-only properties return an ISO date string like "2026-06-06",
+  // not epoch milliseconds. Parse the Y/M/D components directly as plain
+  // integers — no Date object, no timezone conversion at all.
+  //
+  // IMPORTANT — DateInput month-indexing asymmetry (confirmed by testing):
+  //   - DateInput's onChange callback emits a 0-INDEXED month (Jan=0...Dec=11).
+  //     Confirmed: picking Dec 25, 2026 produced { month: 11, date: 25, ... }.
+  //   - DateInput's `value` PROP (what it renders) expects a 1-INDEXED month.
+  //     Confirmed: passing { month: 10 } for a Nov 25 date rendered as Dec 25.
+  //   These two are NOT the same convention, despite looking like the same
+  //   shape. For LOAD (building the value we hand to DateInput), use 1-indexed.
+  if (typeof epochMs === "string" && /^\d{4}-\d{2}-\d{2}/.test(epochMs)) {
+    const [y, m, d] = epochMs.split("T")[0].split("-").map(Number);
+    if (y && m && d) return { year: y, month: m, date: d };
+  }
+
+  // Fallback: numeric epoch ms — extract using LOCAL time methods (not UTC)
+  // since DateInput appears to construct/read dates in local time internally.
   const n = typeof epochMs === "string" ? parseInt(epochMs, 10) : epochMs;
-  if (isNaN(n)) return null;
+  if (isNaN(n) || n === 0) return null;
   const d = new Date(n);
-  return {
-    year: d.getUTCFullYear(),
-    month: d.getUTCMonth() + 1,
-    date: d.getUTCDate(),
-  };
+  return { year: d.getFullYear(), month: d.getMonth() + 1, date: d.getDate() };
 }
 
 function parseBool(v) {
@@ -965,7 +995,9 @@ function mapOrderToColorStyle(p) {
     colorBase: p.base_color || "",
     colorUpper: p.upper_color || "",
     colorDrawer: p.drawer_color || "",
-    doorBackColor: p.door_back_color || "",
+    doorBackColorBase: p.door_back_base_color || "",
+    doorBackColorUpper: p.door_back_upper_color || "",
+    doorBackColorDrawer: p.door_back_drawer_color || "",
   };
 }
 
@@ -1025,7 +1057,9 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     "base_color",
     "upper_color",
     "drawer_color",
-    "door_back_color",
+    "door_back_base_color",
+    "door_back_upper_color",
+    "door_back_drawer_color",
     "customer_firstname",
     "customer_lastname",
     "cnc_json_url",
@@ -1081,6 +1115,12 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
   ]);
 
   const op = orderRecord.properties || {};
+  console.log(
+    `[DEBUG] raw preferred_ship_date="${op.preferred_ship_date}" typeof=${typeof op.preferred_ship_date}`,
+  );
+  console.log(
+    `[DEBUG] parseDateFromEpoch output=${JSON.stringify(parseDateFromEpoch(op.preferred_ship_date))}`,
+  );
 
   // 2. Get the associated Deal ID so we can re-associate new line items
   let dealId = null;

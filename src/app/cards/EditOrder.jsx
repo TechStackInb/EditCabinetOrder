@@ -226,7 +226,13 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
   const ActiveComponent = TABS[activeIndex].component;
   const isFirst = activeIndex === 0;
   const isLast = activeIndex === TABS.length - 1;
-  const baseColor = cabinetData.colorStyle?.colorBase || '';
+  // All selected front colors (base/upper/drawer), deduped and blanks removed.
+  // Material tabs filter their product lists to any of these colors.
+  const orderColors = [
+    cabinetData.colorStyle?.colorBase,
+    cabinetData.colorStyle?.colorUpper,
+    cabinetData.colorStyle?.colorDrawer,
+  ].filter((c, i, arr) => c && arr.indexOf(c) === i);
 
   // ── Auto-load on mount ─────────────────────────────────────────────────
   useEffect(() => {
@@ -302,6 +308,37 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
 
   const handlePrevious = () => {
     if (!isFirst) setActiveIndex((prev) => prev - 1);
+  };
+
+  // Tab-button navigation. Backward is always allowed. Forward validates every
+  // tab between the current one and the target — required tabs must have data,
+  // and any optional tab the user started must be complete. Empty optional tabs
+  // don't block, so jumping ahead stays easy.
+  const handleTabClick = (targetIndex) => {
+    if (targetIndex === activeIndex) return;
+    if (targetIndex < activeIndex) {
+      setActiveIndex(targetIndex);
+      return;
+    }
+    for (let i = activeIndex; i < targetIndex; i++) {
+      const tab = TABS[i];
+      const tabData = cabinetData[tab.id];
+      if (!tab.optional && !tabData) {
+        sendAlert({
+          message: `Please complete the "${tab.label}" section before continuing.`,
+          type: 'danger',
+        });
+        return;
+      }
+      if (tabData?._incomplete) {
+        sendAlert({
+          message: `The "${tab.label}" section has rows that need completion before continuing.`,
+          type: 'danger',
+        });
+        return;
+      }
+    }
+    setActiveIndex(targetIndex);
   };
 
   // ── Review (pre-save preview) ──────────────────────────────────────────
@@ -532,9 +569,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
             <Button
               key={tab.id}
               variant={activeIndex === index ? 'primary' : 'secondary'}
-              onClick={() => {
-                if (index < activeIndex) setActiveIndex(index);
-              }}
+              onClick={() => handleTabClick(index)}
               size="sm"
             >
               {tab.label}
@@ -551,7 +586,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
               key={`${TABS[activeIndex].id}-${formKey}`}
               context={context}
               serverData={serverData}
-              baseColor={baseColor}
+              orderColors={orderColors}
               // Edit card lives on the Cabinet Order — no deal properties to pass.
               // DetailsTab will render with the loaded cabinetData values directly.
               dealProperties={null}

@@ -287,6 +287,7 @@ const OpeningCard = ({
   total,
   updateRow,
   deleteRow,
+  duplicateRow,
   applyBoreOffsetToAll,
   applyGrainToSimilar,
 }) => {
@@ -546,14 +547,23 @@ const OpeningCard = ({
             {row.oversized && <Tag variant="warning">Oversized</Tag>}
             {row.smallRail && <Tag variant="warning">Small Rail</Tag>}
           </Flex>
-          <Button
-            variant="destructive"
-            size="xs"
-            onClick={() => deleteRow(row.id)}
-            disabled={total === 1}
-          >
-            Remove
-          </Button>
+          <Flex direction="row" gap="small">
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => duplicateRow(row.id)}
+            >
+              Duplicate
+            </Button>
+            <Button
+              variant="destructive"
+              size="xs"
+              onClick={() => deleteRow(row.id)}
+              disabled={total === 1}
+            >
+              Remove
+            </Button>
+          </Flex>
         </Flex>
 
         {/* ── Section 1: Door Details ── */}
@@ -1046,6 +1056,29 @@ export const OpeningsTab = ({ data, onChange }) => {
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
   const deleteRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
 
+  // Duplicate a row: an exact copy with a fresh id, inserted right after the
+  // original. Clears the Lazy Susan companion link so the copy stands alone.
+  // CRITICAL: also clears _recordId and _openingId — the duplicate is a brand
+  // new opening, not a copy of the original's HubSpot identity. Without this,
+  // updateCabinetOrder would try to PATCH the original record with the
+  // duplicate's data instead of CREATEing a new one.
+  const duplicateRow = (id) => {
+    setRows((prev) => {
+      const idx = prev.findIndex((r) => r.id === id);
+      if (idx === -1) return prev;
+      const copy = {
+        ...prev[idx],
+        id: _nextId++,
+        _recordId: null,
+        _openingId: null,
+        _lazySusanCompanionOf: null,
+      };
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      return next;
+    });
+  };
+
   const doors = rows.filter(
     (r) =>
       r.cabinetType === 'Base' ||
@@ -1094,6 +1127,7 @@ export const OpeningsTab = ({ data, onChange }) => {
           total={rows.length}
           updateRow={updateRow}
           deleteRow={deleteRow}
+          duplicateRow={duplicateRow}
           applyBoreOffsetToAll={applyBoreOffsetToAll}
           applyGrainToSimilar={applyGrainToSimilar}
         />
