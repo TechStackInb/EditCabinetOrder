@@ -945,16 +945,15 @@ function parseDateFromEpoch(epochMs) {
   // not epoch milliseconds. Parse the Y/M/D components directly as plain
   // integers — no Date object, no timezone conversion at all.
   //
-  // IMPORTANT — DateInput month-indexing asymmetry (confirmed by testing):
-  //   - DateInput's onChange callback emits a 0-INDEXED month (Jan=0...Dec=11).
-  //     Confirmed: picking Dec 25, 2026 produced { month: 11, date: 25, ... }.
-  //   - DateInput's `value` PROP (what it renders) expects a 1-INDEXED month.
-  //     Confirmed: passing { month: 10 } for a Nov 25 date rendered as Dec 25.
-  //   These two are NOT the same convention, despite looking like the same
-  //   shape. For LOAD (building the value we hand to DateInput), use 1-indexed.
+  // DateInput's `value` prop requires a 0-INDEXED month (Jan=0...Dec=11),
+  // same as its onChange callback. Confirmed by testing: passing month=12
+  // (1-indexed December) produced "Invalid date" — DateInput validates month
+  // is in the 0-11 range and rejects anything outside it. month=1-11 happened
+  // to silently "work" (misinterpreted as the following month) for non-December
+  // dates, which masked the bug until a December date was tested.
   if (typeof epochMs === "string" && /^\d{4}-\d{2}-\d{2}/.test(epochMs)) {
     const [y, m, d] = epochMs.split("T")[0].split("-").map(Number);
-    if (y && m && d) return { year: y, month: m, date: d };
+    if (y && m && d) return { year: y, month: m - 1, date: d };
   }
 
   // Fallback: numeric epoch ms — extract using LOCAL time methods (not UTC)
@@ -962,7 +961,7 @@ function parseDateFromEpoch(epochMs) {
   const n = typeof epochMs === "string" ? parseInt(epochMs, 10) : epochMs;
   if (isNaN(n) || n === 0) return null;
   const d = new Date(n);
-  return { year: d.getFullYear(), month: d.getMonth() + 1, date: d.getDate() };
+  return { year: d.getFullYear(), month: d.getMonth(), date: d.getDate() };
 }
 
 function parseBool(v) {
@@ -1116,10 +1115,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
 
   const op = orderRecord.properties || {};
   console.log(
-    `[DEBUG] raw preferred_ship_date="${op.preferred_ship_date}" typeof=${typeof op.preferred_ship_date}`,
-  );
-  console.log(
-    `[DEBUG] parseDateFromEpoch output=${JSON.stringify(parseDateFromEpoch(op.preferred_ship_date))}`,
+    `[DEBUG customer] firstname="${op.customer_firstname}" lastname="${op.customer_lastname}"`,
   );
 
   // 2. Get the associated Deal ID so we can re-associate new line items

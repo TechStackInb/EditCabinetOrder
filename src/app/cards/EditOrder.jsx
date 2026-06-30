@@ -273,6 +273,11 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
         console.log(
           `[LOAD] order=${info?.orderNumber} openings=${loaded?.openings?.rows?.length ?? 0}`,
         );
+        console.log(
+          '[DEBUG customer in React]',
+          info?.customerFirstName,
+          info?.customerLastName,
+        );
       } catch (err) {
         setLoadError(
           `Unexpected error loading order: ${err.message || String(err)}`,
@@ -590,7 +595,10 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
               // Edit card lives on the Cabinet Order — no deal properties to pass.
               // DetailsTab will render with the loaded cabinetData values directly.
               dealProperties={null}
-              contactProperties={{}}
+              contactProperties={{
+                firstname: orderInfo?.customerFirstName || '',
+                lastname: orderInfo?.customerLastName || '',
+              }}
               baseNumber={orderInfo?.orderNumber || ''}
               data={cabinetData[TABS[activeIndex].id]}
               onChange={handleChange}
