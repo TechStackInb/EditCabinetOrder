@@ -1063,7 +1063,14 @@ export const OpeningsTab = ({ data, onChange }) => {
   };
 
   const addRow = () => setRows((prev) => [...prev, createEmptyRow()]);
-  const deleteRow = (id) => setRows((prev) => prev.filter((r) => r.id !== id));
+  const deleteRow = (id) =>
+    setRows((prev) => {
+      const filtered = prev.filter((r) => r.id !== id);
+      // Never leave the tab with zero rows — if the user just removed the
+      // last one, immediately add back a fresh blank placeholder so there's
+      // always a card visible to start filling in.
+      return filtered.length === 0 ? [createEmptyRow()] : filtered;
+    });
 
   // Duplicate a row: an exact copy with a fresh id, inserted right after the
   // original. Clears the Lazy Susan companion link so the copy stands alone.
