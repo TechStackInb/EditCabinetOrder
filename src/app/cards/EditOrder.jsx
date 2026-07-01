@@ -471,7 +471,7 @@ const Extension = ({ context, sendAlert, runServerlessFunction }) => {
           message: `Order saved with ${errors.length} issue(s). Check console for details.`,
           type: 'warning',
         });
-        console.warn('Update flow errors:', errors);
+        console.log('Update flow errors:', errors);
       } else {
         sendAlert({
           message: `Order updated successfully! ${openingIds?.length || 0} openings, ${lineItemIds?.length || 0} line items saved.`,
