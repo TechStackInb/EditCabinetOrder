@@ -9,12 +9,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const HUBDB_TABLE_ID = "323606819";
+const UPCHARGE_TABLE_ID = "351852952";
 const OBJECT_TYPE = "2-64007536"; // Inventory
 const CABINET_ORDER_TYPE = "2-64007538";
 const CABINET_OPENING_TYPE = "2-64007539";
 const LINE_ITEM_TYPE = "0-8";
 const DEAL_TYPE = "0-3";
 
+// Fallback only. The live upcharge values now come from the HubDB table
+// UPCHARGE_TABLE_ID; this table is used only if that fetch fails or is missing a
+// group. Keys are the normalized group ("1","2","3","5","STRIP").
 const COLOR_UPCHARGE = { 1: 0.0, 2: 1.0, 3: 2.0, STRIP: 1.0, 5: -2.0 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -153,6 +157,34 @@ async function fetchAllHubdbColors(accessToken) {
   });
   console.log(`[fetchAllHubdbColors] ${rows.length} rows`);
   return trimmed;
+}
+
+// Fetch the color-upcharge HubDB table into a lookup map keyed by the normalized
+// group (e.g. "Group 2" → "2", "STRIP" → "STRIP"), value = dollar upcharge per
+// sq ft. Colors reference a group; the group's price here is the upcharge.
+async function fetchColorUpcharges(accessToken) {
+  const res = await fetch(
+    `https://api.hubapi.com/cms/v3/hubdb/tables/${UPCHARGE_TABLE_ID}/rows`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!res.ok) {
+    const e = await res.text();
+    throw new Error(`Upcharge HubDB Error: ${res.status} — ${e}`);
+  }
+  const data = await res.json();
+  const rows = data.results || [];
+  const map = {};
+  for (const r of rows) {
+    const name = r.values?.name;
+    if (name == null) continue;
+    const key = normalizeGroupKey(name);
+    const val = parseFloat(r.values?.price);
+    map[key] = isNaN(val) ? 0 : val;
+  }
+  console.log(
+    `[fetchColorUpcharges] fetched ${rows.length} rows → ${JSON.stringify(map)}`,
+  );
+  return map;
 }
 
 async function getRecord(accessToken, objectType, recordId, properties) {
@@ -401,11 +433,39 @@ function findColorGroup(hubdbColors, colorName) {
   return g != null ? String(g) : "";
 }
 
-function getColorUpcharge(group) {
-  return COLOR_UPCHARGE[group] ?? 0;
+// Normalize a group value to a canonical key so the colors table and the
+// upcharge table join regardless of format: "Group 2" / "2" → "2",
+// "STRIP" → "STRIP".
+function normalizeGroupKey(v) {
+  if (v == null) return "";
+  const s = String(v).trim().toUpperCase();
+  if (s.includes("STRIP")) return "STRIP";
+  const m = s.match(/\d+/);
+  return m ? m[0] : s;
 }
 
-function priceOpening(row, inventory, colorStyle, hubdbColors, tag = "?") {
+// Look up the per-sq-ft upcharge for a color group. Prefers the live HubDB map;
+// falls back to the built-in COLOR_UPCHARGE table if the map is unavailable or
+// doesn't contain the group. Uses hasOwnProperty so a real 0 isn't skipped.
+function getColorUpcharge(group, upcharges) {
+  const key = normalizeGroupKey(group);
+  if (upcharges && Object.prototype.hasOwnProperty.call(upcharges, key)) {
+    return upcharges[key];
+  }
+  if (Object.prototype.hasOwnProperty.call(COLOR_UPCHARGE, key)) {
+    return COLOR_UPCHARGE[key];
+  }
+  return 0;
+}
+
+function priceOpening(
+  row,
+  inventory,
+  colorStyle,
+  hubdbColors,
+  upcharges,
+  tag = "?",
+) {
   const logPrefix = `[PRICING ${tag}]`;
   const width = asNumber(row.widthInches, row.widthFraction);
   const height = asNumber(row.heightInches, row.heightFraction);
@@ -452,7 +512,7 @@ function priceOpening(row, inventory, colorStyle, hubdbColors, tag = "?") {
   const costField = useDrawerCost ? "drawercost" : "cost";
   const baseCost = parseFloat(doorRecord.properties?.[costField] || "0") || 0;
   const colorGroup = findColorGroup(hubdbColors, colorName);
-  const upcharge = getColorUpcharge(colorGroup);
+  const upcharge = getColorUpcharge(colorGroup, upcharges);
   const rate = baseCost + upcharge;
   const amount = Math.round(rate * qty * 100) / 100;
   console.log(
@@ -466,10 +526,17 @@ function calculateCabinetRollupPrice(
   inventory,
   colorStyle,
   hubdbColors,
+  upcharges,
 ) {
   let total = 0;
   for (const row of openingRows) {
-    const { amount } = priceOpening(row, inventory, colorStyle, hubdbColors);
+    const { amount } = priceOpening(
+      row,
+      inventory,
+      colorStyle,
+      hubdbColors,
+      upcharges,
+    );
     total += amount;
   }
   return Math.round(total * 100) / 100;
@@ -1293,7 +1360,13 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
 
 // ─── PREVIEW action (self-contained copy) ────────────────────────────────────
 
-function buildPreviewSummary(cabinetData, inventory, hubdbColors, orderInfo) {
+function buildPreviewSummary(
+  cabinetData,
+  inventory,
+  hubdbColors,
+  orderInfo,
+  upcharges,
+) {
   const colorStyle = cabinetData.colorStyle || {};
   const openingRows = cabinetData.openings?.rows || [];
 
@@ -1303,6 +1376,7 @@ function buildPreviewSummary(cabinetData, inventory, hubdbColors, orderInfo) {
       inventory,
       colorStyle,
       hubdbColors,
+      upcharges,
       `D${i + 1}`,
     );
     const width = asNumber(row.widthInches, row.widthFraction);
@@ -1391,6 +1465,7 @@ async function updateCabinetOrder(
   inventory,
   hubdbColors,
   orderInfo,
+  upcharges,
 ) {
   const results = {
     cabinetOrderId,
@@ -1464,6 +1539,7 @@ async function updateCabinetOrder(
       inventory,
       colorStyle,
       hubdbColors,
+      upcharges,
       row._openingId || `D${i + 1}`,
     ),
   );
@@ -1824,12 +1900,25 @@ exports.main = async (context = {}) => {
         fetches.push(
           fetchAllHubdbColors(ACCESS_TOKEN).then((r) => (hubdbColors = r)),
         );
+      let upcharges = null;
+      fetches.push(
+        fetchColorUpcharges(ACCESS_TOKEN)
+          .then((r) => (upcharges = r))
+          .catch((e) => {
+            console.log(
+              "[upcharge] fetch failed, using built-in table:",
+              e?.message,
+            );
+            upcharges = null;
+          }),
+      );
       if (fetches.length) await Promise.all(fetches);
       const summary = buildPreviewSummary(
         cabinetData,
         inventory,
         hubdbColors,
         orderInfo,
+        upcharges,
       );
       return { success: true, summary };
     }
@@ -1841,10 +1930,19 @@ exports.main = async (context = {}) => {
       if (!cabinetData) throw new Error("Missing cabinetData");
       if (!orderInfo?.orderNumber) throw new Error("Missing orderNumber");
 
+      let upcharges = null;
       const [inventory, hubdbColors] = await Promise.all([
         fetchAllInventory(ACCESS_TOKEN),
         fetchAllHubdbColors(ACCESS_TOKEN),
       ]);
+      try {
+        upcharges = await fetchColorUpcharges(ACCESS_TOKEN);
+      } catch (e) {
+        console.log(
+          "[upcharge] fetch failed, using built-in table:",
+          e?.message,
+        );
+      }
 
       const result = await updateCabinetOrder(
         ACCESS_TOKEN,
@@ -1853,6 +1951,7 @@ exports.main = async (context = {}) => {
         inventory,
         hubdbColors,
         orderInfo,
+        upcharges,
       );
       return { success: true, ...result };
     }
