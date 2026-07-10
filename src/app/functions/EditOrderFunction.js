@@ -219,7 +219,7 @@ async function getAssociatedObjects(
     });
     if (!res.ok) {
       const e = await res.text();
-      if (res.status === 404) break; // no associations — return empty
+      if (res.status === 404) break;
       throw new Error(
         `Associations ${fromType}:${fromId}→${toType}: ${res.status} — ${e}`,
       );
@@ -391,7 +391,7 @@ async function createLineItemWithAssociations(
   return lineItem;
 }
 
-// ─── Pricing helpers (identical to CustomCabinetUIExt_function) ──────────────
+// ─── Pricing helpers ──────────────────────────────────────────────────────────
 
 function fracToDecimal(fracStr) {
   if (!fracStr || fracStr === "--") return 0;
@@ -456,6 +456,20 @@ function getColorUpcharge(group, upcharges) {
     return COLOR_UPCHARGE[key];
   }
   return 0;
+}
+
+// Per-unit price for a material (moulding/laminate/thermofoil/fill stick),
+// including the color upcharge for the material's OWN partcolor. Mirrors the
+// opening formula (base cost + group upcharge). One source of truth so preview,
+// saved line items, and the CNC JSON all agree.
+function materialUnitPrice(invRecord, hubdbColors, upcharges) {
+  const cost = parseFloat(invRecord.properties?.cost || "0") || 0;
+  const colorGroup = findColorGroup(
+    hubdbColors,
+    invRecord.properties?.partcolor,
+  );
+  const upcharge = getColorUpcharge(colorGroup, upcharges);
+  return cost + upcharge;
 }
 
 function priceOpening(
@@ -573,7 +587,7 @@ function countBores(openingRows) {
   return { standard, custom };
 }
 
-// ─── CNC JSON helpers (identical to CustomCabinetUIExt_function) ─────────────
+// ─── CNC JSON helpers ─────────────────────────────────────────────────────────
 
 function toMm(inches, fraction) {
   return Math.round(asNumber(inches, fraction) * 25.4 * 10) / 10;
@@ -622,8 +636,7 @@ function formatDateForCncJson(dateValue) {
     dateValue.date != null
   ) {
     // HubSpot's DateInput month is 0-indexed (Jan = 0), matching the Date
-    // constructor's expectation — do NOT subtract 1. See formatDateForHubSpot
-    // for the full explanation of this confirmed indexing behavior.
+    // constructor's expectation — do NOT subtract 1.
     d = new Date(dateValue.year, dateValue.month, dateValue.date);
   } else if (typeof dateValue === "string") {
     d = new Date(dateValue);
@@ -659,6 +672,7 @@ function formatDateForHubSpot(dateValue) {
   return null;
 }
 
+// upcharges is passed so material SODetail rates match saved line item prices.
 function buildCncJson(
   cabinetData,
   inventory,
@@ -666,6 +680,7 @@ function buildCncJson(
   cabinetOrderId,
   openingPrices,
   orderInfo,
+  upcharges,
 ) {
   const details = cabinetData.details || {};
   const colorStyle = cabinetData.colorStyle || {};
@@ -827,6 +842,7 @@ function buildCncJson(
       Amount: String(Math.round(val.totalAmount * 100) / 100),
     });
   }
+  // Material SODetails use materialUnitPrice so the JSON rate matches the saved line item price.
   const materialTabsForJson = [
     { key: "mouldings", idField: "mouldingId" },
     { key: "laminate", idField: "laminateId" },
@@ -839,15 +855,15 @@ function buildCncJson(
       if (!row[idField]) continue;
       const inv = inventory.find((r) => r.id === row[idField]);
       if (!inv) continue;
-      const cost = parseFloat(inv.properties?.cost || "0") || 0;
+      const unitPrice = materialUnitPrice(inv, hubdbColors, upcharges);
       const qty = parseFloat(row.qty || "0") || 1;
       json.SODetails.push({
         Description: inv.properties?.name || "",
         Qty: String(qty),
-        Rate: String(cost),
+        Rate: String(Math.round(unitPrice * 100) / 100),
         PartNumber: inv.properties?.sku || "",
         ItemName: inv.properties?.name || "",
-        Amount: String(Math.round(cost * qty * 100) / 100),
+        Amount: String(Math.round(unitPrice * qty * 100) / 100),
       });
     }
   }
@@ -1003,9 +1019,6 @@ function buildCabinetOpeningProperties(row, index, pricing) {
 
 // ─── Material line item reverse-mapping (LOAD) ───────────────────────────────
 
-// Maps each material tab to the inventory `type` values it draws from, and
-// the row shape it expects. Mirrors the constants in MouldingsTab.jsx,
-// LaminateTab.jsx, ThermofoilTab.jsx, FillSticksTab.jsx.
 const MATERIAL_TAB_INVENTORY_TYPES = {
   mouldings: ["Moulding", "MouldingDetail"],
   laminate: ["Laminate", "PSLaminate", "LaminateDetail"],
@@ -1013,8 +1026,6 @@ const MATERIAL_TAB_INVENTORY_TYPES = {
   fillSticks: ["FillStick", "FillStickDetail"],
 };
 
-// Field name each tab uses for its inventory-record-ID row field
-// (mouldingId, laminateId, thermofoilId, fillStickId).
 const MATERIAL_TAB_ID_FIELD = {
   mouldings: "mouldingId",
   laminate: "laminateId",
@@ -1022,17 +1033,8 @@ const MATERIAL_TAB_ID_FIELD = {
   fillSticks: "fillStickId",
 };
 
-let _materialRowId = 1; // matches each tab's internal `_nextId` row-key convention
+let _materialRowId = 1;
 
-// Reverse-maps existing line items back into material tab row shapes by
-// matching each line item's hs_sku against inventory. Returns
-// { mouldings: {rows}|null, laminate: {rows}|null, thermofoil: {rows}|null,
-//   fillSticks: {rows}|null, unmatchedLineItemIds: [...] }
-//
-// unmatchedLineItemIds covers line items that are NOT material rows (the
-// Cabinet rollup, Bore Charge, Custom Bore Charge) — those have no SKU match
-// and are always safe to delete-and-recreate on save since they're fully
-// computed from openings, never user-selected.
 function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
   const result = {
     mouldings: [],
@@ -1044,21 +1046,18 @@ function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
 
   for (const li of lineItems) {
     const sku = li.properties?.hs_sku;
-    if (!sku) continue; // Cabinet rollup / Bore Charge / Custom Bore Charge have no SKU
-
+    if (!sku) continue;
     const invRecord = inventory.find((r) => r.properties?.sku === sku);
-    if (!invRecord) continue; // SKU doesn't match any current inventory record — leave alone
-
+    if (!invRecord) continue;
     const invType = invRecord.properties?.type;
     const tabKey = Object.keys(MATERIAL_TAB_INVENTORY_TYPES).find((key) =>
       MATERIAL_TAB_INVENTORY_TYPES[key].includes(invType),
     );
-    if (!tabKey) continue; // not a material-tab inventory type
-
+    if (!tabKey) continue;
     const idField = MATERIAL_TAB_ID_FIELD[tabKey];
     const row = {
       id: _materialRowId++,
-      _lineItemId: li.id, // carried through for smart-diff on save
+      _lineItemId: li.id,
       description: invRecord.properties?.name || li.properties?.name || "",
       [idField]: invRecord.id,
       color: invRecord.properties?.partcolor || "",
@@ -1066,10 +1065,6 @@ function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
       ordered: false,
       promptColorMismatch: false,
     };
-    // MouldingsTab uniquely requires an `inches` field (fixed-length stock,
-    // always 94" per createEmptyRow's default) — without it the reverse-mapped
-    // row fails isRowValid and shows as "incomplete" even though it's fully
-    // populated otherwise.
     if (tabKey === "mouldings") row.inches = "94";
     result[tabKey].push(row);
     matchedLineItemIds.add(li.id);
@@ -1078,7 +1073,6 @@ function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
   const unmatchedLineItemIds = lineItems
     .map((li) => li.id)
     .filter((id) => !matchedLineItemIds.has(id));
-
   return {
     mouldings: result.mouldings.length ? { rows: result.mouldings } : null,
     laminate: result.laminate.length ? { rows: result.laminate } : null,
@@ -1090,24 +1084,14 @@ function reverseMapLineItemsToMaterialTabs(lineItems, inventory) {
 
 function parseDateFromEpoch(epochMs) {
   if (!epochMs || epochMs === "0" || epochMs === 0) return null;
-
   // HubSpot date-only properties return an ISO date string like "2026-06-06",
-  // not epoch milliseconds. Parse the Y/M/D components directly as plain
-  // integers — no Date object, no timezone conversion at all.
-  //
-  // DateInput's `value` prop requires a 0-INDEXED month (Jan=0...Dec=11),
-  // same as its onChange callback. Confirmed by testing: passing month=12
-  // (1-indexed December) produced "Invalid date" — DateInput validates month
-  // is in the 0-11 range and rejects anything outside it. month=1-11 happened
-  // to silently "work" (misinterpreted as the following month) for non-December
-  // dates, which masked the bug until a December date was tested.
+  // not epoch milliseconds. DateInput's value prop requires 0-INDEXED month
+  // (Jan=0...Dec=11) — confirmed by testing (month=12 for December gave
+  // "Invalid date").
   if (typeof epochMs === "string" && /^\d{4}-\d{2}-\d{2}/.test(epochMs)) {
     const [y, m, d] = epochMs.split("T")[0].split("-").map(Number);
     if (y && m && d) return { year: y, month: m - 1, date: d };
   }
-
-  // Fallback: numeric epoch ms — extract using LOCAL time methods (not UTC)
-  // since DateInput appears to construct/read dates in local time internally.
   const n = typeof epochMs === "string" ? parseInt(epochMs, 10) : epochMs;
   if (isNaN(n) || n === 0) return null;
   const d = new Date(n);
@@ -1132,7 +1116,7 @@ function mapOrderToDetails(p) {
     shipOptions: p.shipping_method || "",
     shipDate: parseDateFromEpoch(p.preferred_ship_date),
     notes: p.cabinet_notes || "",
-    franchiseNo: "", // not stored on Cabinet Order; comes from Deal
+    franchiseNo: "",
   };
 }
 
@@ -1152,7 +1136,6 @@ function mapOrderToColorStyle(p) {
 
 function mapOpeningToRow(p, recordId) {
   return {
-    // Stable identity — carried through form untouched on every field update
     _openingId: p.opening_id || null,
     _recordId: recordId || null,
     cabinetType: p.cabinet_type || "",
@@ -1185,7 +1168,6 @@ function mapOpeningToRow(p, recordId) {
 // ─── LOAD action ──────────────────────────────────────────────────────────────
 
 async function loadCabinetOrder(accessToken, cabinetOrderId) {
-  // 1. Fetch all data in parallel: order props, openings, line items, inventory, HubDB
   const orderPropertiesNeeded = [
     "order_name",
     "order_number",
@@ -1213,7 +1195,6 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     "customer_lastname",
     "cnc_json_url",
   ];
-
   const openingPropertiesNeeded = [
     "opening_id",
     "cabinet_type",
@@ -1265,10 +1246,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
 
   const op = orderRecord.properties || {};
 
-  // 1b. Fetch existing line items and reverse-map material ones back into
-  //     the form so the user sees what's already on the order, instead of
-  //     starting from empty tabs (which would otherwise cause data loss —
-  //     see updateCabinetOrder's smart-diff for the save-side counterpart).
+  // 1b. Reverse-map existing line items back into material tab rows.
   const existingLineItems = await getAssociatedLineItemsFull(
     accessToken,
     cabinetOrderId,
@@ -1278,7 +1256,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     inventory,
   );
 
-  // 2. Get the associated Deal ID so we can re-associate new line items
+  // 2. Associated Deal ID
   let dealId = null;
   try {
     const dealAssoc = await getAssociatedObjects(
@@ -1296,7 +1274,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     );
   }
 
-  // 3. Sort openings by opening_id (D1, D2, D3 …) for stable ordering
+  // 3. Sort openings by D-number
   const sortedOpenings = [...rawOpenings].sort((a, b) => {
     const numA = parseInt(
       (a.properties?.opening_id || "D0").replace(/\D/g, ""),
@@ -1308,16 +1286,9 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     );
     return numA - numB;
   });
-
-  // Assign a synthetic `id` matching OpeningsTab's internal row key convention.
-  // Loaded rows don't come from createEmptyRow() so they have no `id` — without
-  // it, updateRow/deleteRow (which key by row.id) can't find them.
-  // We use the D-number as the id (1, 2, 3…) so they're stable and don't
-  // collide with newly added rows (which start _nextId from 1, but the tab
-  // resets _nextId only on a fresh mount — using large offsets avoids collision).
   const openingRows = sortedOpenings.map((o, i) => ({
     ...mapOpeningToRow(o.properties || {}, o.id),
-    id: i + 1, // stable React key for OpeningsTab's updateRow/deleteRow
+    id: i + 1,
   }));
 
   // 4. Build cabinetData
@@ -1337,16 +1308,15 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
     customerLastName: op.customer_lastname || "",
     customerName:
       `${op.customer_firstname || ""} ${op.customer_lastname || ""}`.trim(),
-    franchiseNo: "", // from Deal — not stored on Cabinet Order
+    franchiseNo: "",
     suffix: (op.order_number || "").split("-")[0] || "000",
-    unmatchedLineItemIds: materialMap.unmatchedLineItemIds, // rollup/bore charges — safe to delete-recreate
+    unmatchedLineItemIds: materialMap.unmatchedLineItemIds,
     dealId,
   };
 
   console.log(
     `[LOAD] order=${orderInfo.orderNumber} openings=${openingRows.length} dealId=${dealId}`,
   );
-
   return {
     cabinetData,
     orderInfo,
@@ -1358,7 +1328,7 @@ async function loadCabinetOrder(accessToken, cabinetOrderId) {
   };
 }
 
-// ─── PREVIEW action (self-contained copy) ────────────────────────────────────
+// ─── PREVIEW action ───────────────────────────────────────────────────────────
 
 function buildPreviewSummary(
   cabinetData,
@@ -1427,7 +1397,8 @@ function buildPreviewSummary(
       if (!row[idField]) continue;
       const inv = inventory.find((r) => r.id === row[idField]);
       if (!inv) continue;
-      const unitPrice = parseFloat(inv.properties?.cost || "0") || 0;
+      // materialUnitPrice so preview totals match what gets saved as line items.
+      const unitPrice = materialUnitPrice(inv, hubdbColors, upcharges);
       const qty = parseFloat(row.qty || "0") || 1;
       lineItems.push({
         name: inv.properties?.name || "(unnamed)",
@@ -1474,12 +1445,10 @@ async function updateCabinetOrder(
     lineItemIds: [],
     errors: [],
   };
-
   const dealId = orderInfo.dealId || null;
 
-  // 1. PATCH the Cabinet Order properties (order_number stays unchanged)
+  // 1. PATCH Cabinet Order properties (order_number preserved)
   const cabinetOrderProps = buildCabinetOrderProperties(cabinetData, inventory);
-  // Preserve the existing order_number — never bump on edit
   cabinetOrderProps.order_number = orderInfo.orderNumber;
   cabinetOrderProps.order_name =
     cabinetData.details?.description || orderInfo.orderNumber;
@@ -1493,29 +1462,14 @@ async function updateCabinetOrder(
   );
   console.log(`[UPDATE] patched Cabinet Order ${cabinetOrderId}`);
 
-  // 2. Smart-diff openings using _recordId and _openingId carried from LOAD.
-  //
-  //    Each row loaded from HubSpot has _recordId (HubSpot record ID) and
-  //    _openingId (e.g. "D1"). OpeningsTab spreads these on every field update
-  //    so they survive all user edits and arrive here unchanged.
-  //
-  //    Cases:
-  //      row._recordId set   → existing opening → PATCH by record ID
-  //      row._recordId null  → user added a new row → CREATE + associate
-  //      existing record not present in newOpeningRows → user removed it → ARCHIVE
-  //
-  //    opening_id on save: existing rows keep their original D-number.
-  //    New rows get the next available D-number (max existing + increment).
-
+  // 2. Smart-diff openings
   const newOpeningRows = cabinetData.openings?.rows || [];
   const colorStyle = cabinetData.colorStyle || {};
 
-  // Build set of record IDs still present after edit (for archive detection)
   const retainedRecordIds = new Set(
     newOpeningRows.map((r) => r._recordId).filter(Boolean),
   );
 
-  // Fetch all existing opening record IDs so we know what to archive
   const existingOpenings = await getAssociatedObjects(
     accessToken,
     CABINET_ORDER_TYPE,
@@ -1525,7 +1479,6 @@ async function updateCabinetOrder(
   );
   const existingRecordIds = existingOpenings.map((o) => o.id);
 
-  // Determine next D-number for any newly added rows
   const existingDNums = existingOpenings
     .map((o) =>
       parseInt((o.properties?.opening_id || "D0").replace(/\D/g, ""), 10),
@@ -1550,13 +1503,11 @@ async function updateCabinetOrder(
       const pricing = openingPrices[i];
       try {
         if (row._recordId) {
-          // Existing opening — PATCH in place, preserve record ID and opening_id
           const props = buildCabinetOpeningProperties(
             { ...row, openingIdOverride: row._openingId },
             i,
             pricing,
           );
-          // Keep the original opening_id, don't let buildCabinetOpeningProperties re-derive it
           props.opening_id = row._openingId;
           await updateRecord(
             accessToken,
@@ -1569,7 +1520,6 @@ async function updateCabinetOrder(
             `[UPDATE] patched opening ${row._openingId} (record ${row._recordId})`,
           );
         } else {
-          // New row added by user — assign next available D-number
           const newOpeningId = `D${nextDNum++}`;
           const props = buildCabinetOpeningProperties(row, i, pricing);
           props.opening_id = newOpeningId;
@@ -1597,7 +1547,7 @@ async function updateCabinetOrder(
     }),
   );
 
-  // ARCHIVE removed openings (existed before, not retained after edit)
+  // ARCHIVE removed openings
   const removedRecordIds = existingRecordIds.filter(
     (id) => !retainedRecordIds.has(id),
   );
@@ -1614,19 +1564,7 @@ async function updateCabinetOrder(
     }),
   );
 
-  // 3. Smart-diff line items.
-  //
-  //    Cabinet rollup + Bore Charge + Custom Bore Charge are fully computed
-  //    from openings (never user-selected) — always delete and recreate these.
-  //    They're identified by orderInfo.unmatchedLineItemIds (set during LOAD's
-  //    reverse-mapping — any existing line item whose hs_sku didn't match a
-  //    material-tab inventory record falls into this bucket).
-  //
-  //    Material tab line items (mouldings/laminate/thermofoil/fillSticks) are
-  //    diffed by _lineItemId, which LOAD attached to each reverse-mapped row:
-  //      row._lineItemId set, still in form → PATCH quantity if changed
-  //      row._lineItemId set, removed from form → DELETE
-  //      row has no _lineItemId (new row added by user) → CREATE
+  // 3. Smart-diff line items
   const materialTabs = [
     { key: "mouldings", idField: "mouldingId" },
     { key: "laminate", idField: "laminateId" },
@@ -1634,6 +1572,7 @@ async function updateCabinetOrder(
     { key: "fillSticks", idField: "fillStickId" },
   ];
 
+  // Delete always-recomputed items (rollup + bore charges)
   try {
     const alwaysRecreateIds = orderInfo.unmatchedLineItemIds || [];
     console.log(
@@ -1648,7 +1587,7 @@ async function updateCabinetOrder(
     );
   }
 
-  // Build the set of _lineItemId values still present in the form (retained).
+  // Build retained material line item ID set
   const retainedLineItemIds = new Set();
   for (const { key } of materialTabs) {
     const rows = cabinetData[key]?.rows || [];
@@ -1657,8 +1596,7 @@ async function updateCabinetOrder(
     }
   }
 
-  // Determine which material line items existed before but are no longer in
-  // the form (user removed that row) — these need deleting.
+  // Delete material line items removed from the form
   try {
     const allExistingLineItems = await getAssociatedLineItemsFull(
       accessToken,
@@ -1666,8 +1604,8 @@ async function updateCabinetOrder(
     );
     const removedMaterialLineItemIds = allExistingLineItems
       .map((li) => li.id)
-      .filter((id) => !(orderInfo.unmatchedLineItemIds || []).includes(id)) // not a rollup/bore (already handled above)
-      .filter((id) => !retainedLineItemIds.has(id)); // not retained in the form
+      .filter((id) => !(orderInfo.unmatchedLineItemIds || []).includes(id))
+      .filter((id) => !retainedLineItemIds.has(id));
     if (removedMaterialLineItemIds.length > 0) {
       console.log(
         `[UPDATE] deleting ${removedMaterialLineItemIds.length} removed material line items`,
@@ -1776,11 +1714,11 @@ async function updateCabinetOrder(
             if (!invRecord)
               throw new Error(`Inventory record ${row[idField]} not found`);
             const qty = parseFloat(row.qty || "0") || 1;
-            const price = parseFloat(invRecord.properties?.cost || "0") || 0;
+            // materialUnitPrice so saved line item prices match preview and CNC JSON.
+            const price = materialUnitPrice(invRecord, hubdbColors, upcharges);
 
             if (row._lineItemId) {
-              // Existing material line item — PATCH quantity/price in place.
-              // Preserves the line item's record ID and any history on it.
+              // Existing material line item — PATCH in place
               await updateRecord(accessToken, LINE_ITEM_TYPE, row._lineItemId, {
                 name: invRecord.properties?.name || "(unnamed)",
                 quantity: qty,
@@ -1792,7 +1730,7 @@ async function updateCabinetOrder(
                 `[UPDATE] patched ${key} line item (record ${row._lineItemId})`,
               );
             } else {
-              // New row added by user — CREATE + associate
+              // New row — CREATE + associate
               const li = await createLineItemWithAssociations(
                 accessToken,
                 {
@@ -1820,7 +1758,7 @@ async function updateCabinetOrder(
   }
   await Promise.all(lineItemPromises);
 
-  // 4. Re-generate and re-upload CNC JSON (overwrite by same filename)
+  // 4. Re-generate and re-upload CNC JSON
   let cncJsonUrl = "";
   if (newOpeningRows.length > 0) {
     try {
@@ -1831,6 +1769,7 @@ async function updateCabinetOrder(
         cabinetOrderId,
         openingPrices,
         orderInfo,
+        upcharges,
       );
       const jsonString = JSON.stringify(cncJson);
       const jsonFileName = `${orderInfo.orderNumber}.json`;
@@ -1846,7 +1785,7 @@ async function updateCabinetOrder(
     }
   }
 
-  // 5. Final PATCH: custom_cabinet_ordered + updated CNC URL
+  // 5. Final PATCH
   try {
     const finalPatch = { custom_cabinet_ordered: "Yes" };
     if (cncJsonUrl) finalPatch.cnc_json_url = cncJsonUrl;
