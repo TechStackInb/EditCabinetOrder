@@ -862,9 +862,10 @@ function buildCncJson(
       if (!inv) continue;
       const unitPrice = materialUnitPrice(inv, hubdbColors, upcharges);
       const qty = parseFloat(row.qty || "0") || 1;
-      // Laminate SODetail qty shown in sq ft (qty × 32); Amount stays raw qty.
+      // Laminate SODetail qty shown in sq ft (qty × 32) with a "sqft" label;
+      // Amount stays based on the raw sheet qty.
       const displayQty =
-        key === "laminate" ? qty * LAMINATE_SQFT_PER_UNIT : qty;
+        key === "laminate" ? `${qty * LAMINATE_SQFT_PER_UNIT} sqft` : qty;
       json.SODetails.push({
         Description: inv.properties?.name || "",
         Qty: String(displayQty),
@@ -899,10 +900,16 @@ function buildCncJson(
       const inv = inventory.find((r) => r.id === row[idField]);
       if (!inv) continue;
       partCounters[prefix] += 1;
+      const rawPartQty = parseFloat(row.qty || "0") || 1;
+      // Laminate part qty shown in sq ft (qty × 32) with a "sqft" label.
+      const partQty =
+        key === "laminate"
+          ? `${rawPartQty * LAMINATE_SQFT_PER_UNIT} sqft`
+          : rawPartQty;
       json.Parts.push({
         Description: inv.properties?.name || "",
         PartNumber: inv.properties?.sku || "",
-        Qty: parseFloat(row.qty || "0") || 1,
+        Qty: partQty,
         Type: type,
         PieceID: `${prefix}${partCounters[prefix]}`,
         Color: inv.properties?.partcolor || "",
