@@ -1411,7 +1411,7 @@ function buildPreviewSummary(
       // Laminate is sold as 32 sq ft sheets — show the client the coverage in
       // sq ft (qty × 32). Price/total stay based on the raw sheet qty.
       const displayQty =
-        key === "laminate" ? qty * LAMINATE_SQFT_PER_UNIT : qty;
+        key === "laminate" ? `${qty * LAMINATE_SQFT_PER_UNIT} sqft` : qty;
       lineItems.push({
         name: inv.properties?.name || "(unnamed)",
         qty: displayQty,
