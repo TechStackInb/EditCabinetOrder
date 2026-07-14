@@ -21,6 +21,11 @@ const DEAL_TYPE = "0-3";
 // group. Keys are the normalized group ("1","2","3","5","STRIP").
 const COLOR_UPCHARGE = { 1: 0.0, 2: 1.0, 3: 2.0, STRIP: 1.0, 5: -2.0 };
 
+// Laminate is stocked/sold as 32 sq ft sheets. The client-facing quantity
+// (preview + CNC SODetails) is shown in sq ft (raw qty × 32); pricing and the
+// HubSpot line-item quantity stay on the raw sheet count.
+const LAMINATE_SQFT_PER_UNIT = 32;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ─── Shared HTTP helpers ──────────────────────────────────────────────────────
@@ -857,9 +862,12 @@ function buildCncJson(
       if (!inv) continue;
       const unitPrice = materialUnitPrice(inv, hubdbColors, upcharges);
       const qty = parseFloat(row.qty || "0") || 1;
+      // Laminate SODetail qty shown in sq ft (qty × 32); Amount stays raw qty.
+      const displayQty =
+        key === "laminate" ? qty * LAMINATE_SQFT_PER_UNIT : qty;
       json.SODetails.push({
         Description: inv.properties?.name || "",
-        Qty: String(qty),
+        Qty: String(displayQty),
         Rate: String(Math.round(unitPrice * 100) / 100),
         PartNumber: inv.properties?.sku || "",
         ItemName: inv.properties?.name || "",
@@ -1400,9 +1408,13 @@ function buildPreviewSummary(
       // materialUnitPrice so preview totals match what gets saved as line items.
       const unitPrice = materialUnitPrice(inv, hubdbColors, upcharges);
       const qty = parseFloat(row.qty || "0") || 1;
+      // Laminate is sold as 32 sq ft sheets — show the client the coverage in
+      // sq ft (qty × 32). Price/total stay based on the raw sheet qty.
+      const displayQty =
+        key === "laminate" ? qty * LAMINATE_SQFT_PER_UNIT : qty;
       lineItems.push({
         name: inv.properties?.name || "(unnamed)",
-        qty,
+        qty: displayQty,
         unitPrice,
         total: Math.round(unitPrice * qty * 100) / 100,
       });
